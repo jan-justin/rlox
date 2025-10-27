@@ -1,5 +1,4 @@
-use anyhow::Result;
-use phf::{phf_map, Map};
+use crate as rlox;
 
 #[derive(Clone)]
 pub enum Token {
@@ -48,40 +47,44 @@ pub enum Token {
     Eof { line: usize },
 }
 
-static KEYWORDS: Map<&'static str, Token> = phf_map! {
-    "and" => Token::And,
-    "class" => Token::Class,
-    "else" => Token::Else,
-    "false" => Token::False,
-    "for" => Token::For,
-    "fun" => Token::Fun,
-    "if" => Token::If,
-    "nil" => Token::Nil,
-    "or" => Token::Or,
-    "print" => Token::Print,
-    "return" => Token::Return,
-    "super" => Token::Super,
-    "this" => Token::This,
-    "true" => Token::True,
-    "var" => Token::Var,
-    "while" => Token::While,
-};
+impl Token {
+    fn try_from_keyword(keyword: &str) -> anyhow::Result<Self> {
+        Ok(match keyword {
+            "and" => Token::And,
+            "class" => Token::Class,
+            "else" => Token::Else,
+            "false" => Token::False,
+            "for" => Token::For,
+            "fun" => Token::Fun,
+            "if" => Token::If,
+            "nil" => Token::Nil,
+            "or" => Token::Or,
+            "print" => Token::Print,
+            "return" => Token::Return,
+            "super" => Token::Super,
+            "this" => Token::This,
+            "true" => Token::True,
+            "var" => Token::Var,
+            "while" => Token::While,
+            _ => anyhow::bail!("invalid keyword: {}", keyword),
+        })
+    }
+}
 
-pub type LexError = (usize, usize, &'static str);
-
-pub fn scan(source: &str) -> Result<Vec<Token>, Vec<LexError>> {
+pub fn scan(source: &str) -> Result<Vec<Token>, Vec<rlox::LexError>> {
     let mut line = 0;
-    let mut tokens = Vec::new();
-    let mut errors = Vec::new();
+    let mut tokens = Vec::<Token>::new();
+    let mut errors = Vec::<rlox::LexError>::new();
     let mut chars = source.chars().enumerate().peekable();
-    while let Some((location, char)) = chars.next() {
-        let next_char = chars.next_if(|(_, c)| {
-            matches!(
-                (char, c),
+
+    while let Some((location, current_char)) = chars.next() {
+        let next_char = chars.next_if(|(_, next_char)| {
+            matches! {
+                (current_char, next_char),
                 ('!', '=') | ('=', '=') | ('<', '=') | ('>', '=') | ('/', '/')
-            )
+            }
         });
-        match (char, next_char) {
+        match (current_char, next_char) {
             ('\n', _) => line += 1,
             (' ', _) | ('\r', _) | ('\t', _) => {}
             ('.', _) => tokens.push(Token::Dot),
@@ -103,57 +106,68 @@ pub fn scan(source: &str) -> Result<Vec<Token>, Vec<LexError>> {
             ('=', Some((_, '='))) => tokens.push(Token::EqualEqual),
             ('<', Some((_, '='))) => tokens.push(Token::LessEqual),
             ('>', Some((_, '='))) => tokens.push(Token::GreaterEqual),
-            ('/', Some((_, '/'))) => while chars.next_if(|(_, c)| *c != '\n').is_some() {},
+            ('/', Some((_, '/'))) => while chars.next_if(|(_, char)| *char != '\n').is_some() {},
             ('"', _) => {
-                let mut literal = String::new();
-                while let Some((_, c)) = chars.next_if(|(_, c)| *c != '"') {
-                    if c == '\n' {
+                let mut literal = String::with_capacity(24);
+                while let Some((_, char)) = chars.next_if(|(_, char)| *char != '"') {
+                    if char == '\n' {
                         line += 1
                     }
-                    literal.push(c);
+                    literal.push(char);
                 }
                 if chars.next().is_none() {
-                    errors.push((line, location, "Unterminated string."))
+                    let error = rlox::LexError::from((line, location, "unterminated string"));
+                    errors.push(error)
                 } else {
                     tokens.push(Token::String { literal })
                 }
             }
-            (c, _) if c.is_ascii_digit() => {
-                let mut number_string = String::new();
-                while let Some((_, c)) = chars.next_if(|(_, c)| c.is_ascii_digit()) {
-                    number_string.push(c);
+            (char, _) if char.is_ascii_digit() => {
+                let mut number_string = String::with_capacity(24);
+                while let Some((_, char)) = chars.next_if(|(_, char)| char.is_ascii_digit()) {
+                    number_string.push(char);
                 }
-                if let Some((_, dot)) = chars.next_if(|(_, c)| *c == '.') {
+                if let Some((_, dot)) = chars.next_if(|(_, char)| *char == '.') {
                     number_string.push(dot);
-                    if chars.peek().is_some_and(|(_, c)| c.is_ascii_digit()) {
-                        while let Some((_, c)) = chars.next_if(|(_, c)| c.is_ascii_digit()) {
-                            number_string.push(c);
+                    if chars.peek().is_some_and(|(_, char)| char.is_ascii_digit()) {
+                        while let Some((_, char)) = chars.next_if(|(_, char)| char.is_ascii_digit())
+                        {
+                            number_string.push(char);
                         }
                         match number_string.parse::<f64>() {
                             Ok(literal) => tokens.push(Token::Number { literal }),
-                            Err(_) => errors.push((line, location, "Invalid number.")),
+                            Err(_) => {
+                                let error =
+                                    rlox::LexError::from((line, location, "invalid number"));
+                                errors.push(error)
+                            }
                         };
                     } else {
                         tokens.push(Token::Dot);
                     }
                 }
             }
-            (c, _) if c.is_ascii_alphabetic() || c == '_' => {
+            (char, _) if char.is_ascii_alphabetic() || char == '_' => {
                 let mut identifier = String::new();
-                while let Some((_, c)) =
-                    chars.next_if(|(_, c)| c.is_ascii_alphanumeric() || *c == '_')
+                while let Some((_, char)) =
+                    chars.next_if(|(_, char)| char.is_ascii_alphanumeric() || *char == '_')
                 {
-                    identifier.push(c);
+                    identifier.push(char);
                 }
-                match KEYWORDS.get(&identifier).cloned() {
-                    Some(reserved_keyword) => tokens.push(reserved_keyword),
-                    _ => tokens.push(Token::Identifier),
+                match Token::try_from_keyword(&identifier) {
+                    Ok(reserved_keyword) => tokens.push(reserved_keyword),
+                    Err(_) => tokens.push(Token::Identifier),
                 }
             }
-            _ => errors.push((line, location, "Unexpected character.")),
+            _ => {
+                let error = rlox::LexError::from((line, location, "unexpected character"));
+                errors.push(error)
+            }
         }
     }
+
     tokens.push(Token::Eof { line });
+
     if !errors.is_empty() {
         Err(errors)
     } else {
